@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   auditCiJobRuntime,
-  filamentsRuntimeAuditOptions,
+  vouchingtonRuntimeAuditOptions,
   type GhApiExecutor,
 } from './ci-job-runtime-audit.mts'
 
@@ -75,8 +75,8 @@ function makeExecutor(
 }
 
 describe('CI job runtime audit wrapper', () => {
-  it('keeps filaments CI pull_request and Main CI push filters', () => {
-    expect(filamentsRuntimeAuditOptions).toEqual({
+  it('keeps vouchington CI pull_request and Main CI push filters', () => {
+    expect(vouchingtonRuntimeAuditOptions).toEqual({
       branch: 'main',
       workflows: [
         { name: 'CI', event: 'pull_request' },
