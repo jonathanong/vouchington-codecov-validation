@@ -138,8 +138,8 @@ describe('web route localization bounds', () => {
       return emptyBatchBytes + entryBytes + aliases.length - 1
     }
     const counts: number[] = []
-    expect(ROUTE_SELECTORS).toHaveLength(414)
-    expect(new Set(ROUTE_SELECTORS.map(route => route.selectorId)).size).toBe(414)
+    expect(ROUTE_SELECTORS).toHaveLength(425)
+    expect(new Set(ROUTE_SELECTORS.map(route => route.selectorId)).size).toBe(425)
     for (const route of ROUTE_SELECTORS) {
       for (const locale of locales) {
         const messages = {
