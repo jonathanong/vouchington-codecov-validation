@@ -143,56 +143,60 @@ One single-PR poll per owned PR, safe to run in parallel — pr-shepherd's per-P
 keyed `…/<owner>-<repo>/<pr>/`, so concurrent single-PR polls never reset each other's timer:
 
 ```bash
-# Runs until pr-shepherd itself reaches CANCEL or ESCALATE for this PR — never a caller-enforced
-# wall clock. --merge is required: without it, pr-shepherd never checks
+# Runs until pr-shepherd itself reaches CANCEL, ESCALATE, or another terminal action for this PR —
+# never a caller-enforced wall clock. --merge is required: without it, pr-shepherd never checks
 # mergeStatus.mergeRequirements.stack, so a ready layer silently settles as plain CANCEL instead of
-# ESCALATE/stacked-pr, and the persistent needs-human label/comment below never fires (#11522).
+# the stacked-layer TRIAGE route below, and the persistent needs-human label/comment never fires
+# (#11522).
 pnpm exec pr-shepherd <pr-url> --interval 60s --until-terminal --quiet-status --format json --merge
 ```
 
-**Never run `pnpm exec pr-shepherd --stack ...` while any single-PR poll above is in flight.** The
-aggregate `--stack` poll is a different, shared code path — see "Why not just poll `--stack`" below.
-Terminal handling, each row scoped to that PR alone:
+**Never run `pnpm exec pr-shepherd stack ...` while any single-PR poll above is in flight.** The
+aggregate `stack` poll is a different, shared code path — see "When to run `pnpm exec pr-shepherd stack`"
+below. Terminal handling, each row scoped to that PR alone:
 
-| Exit                    | Action                | Handling                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 13                      | `ESCALATE`            | A human is needed. Apply `needs-human` + one comment (below), then keep shepherding the other owned PRs. Never self-authorize a merge. `stacked-pr`'s `suggestion` text already embeds a runnable `gh stack merge --squash <pr>` command — do **not** relay it as-is: it merges this PR and everything below it, so confirm via [step 2 below](#merge-the-bottom-layer-as-soon-as-it-is-ready) that this PR is actually the bottom-most open layer before anyone runs it. |
-| 0                       | `CANCEL`              | Cancel shepherding of that PR only. The other PRs continue untouched.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| 12                      | `FIX_CODE`            | Fix on the layer that owns it, `gh stack sync`, `gh stack rebase --upstack`, `gh stack push` **once**, then re-poll that PR. Bounded implementation work here may be dispatched to a subagent; the poll loop itself stays with this session.                                                                                                                                                                                                                              |
-| 10 / 11                 | `WAIT` / `MARK_READY` | Normal; continue that PR's poll.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 14                      | `CLOSED`              | Report; stop that PR. If it sits below an open layer, the stack is broken (A2).                                                                                                                                                                                                                                                                                                                                                                                           |
-| 15                      | `MERGE`               | This layer left the open stack — GitHub retargeted it directly onto `main` once every layer below it merged, so `mergeStatus.mergeRequirements.stack` is now absent and pr-shepherd fell through to its ordinary ready-PR path. Not drift: treat it like any other ready PR, report the printed `gh pr merge --match-head-commit <sha>` command, and let the human decide.                                                                                                |
-| 64/65/66/69/70/75/77/78 | tool failure          | Stop that PR and report.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Exit                    | Action                | Handling                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 13                      | `ESCALATE`            | A human is needed. Apply `needs-human` + one comment (below), then keep shepherding the other owned PRs. Never self-authorize a merge.                                                                                                                                                                                                                                                                                                                                                                                         |
+| 12                      | `TRIAGE` (stacked)    | The layer is ready and waiting on a merge decision: `triage.instructions` say this PR is layer N of M in a native stack, not to run `gh pr merge` for it, and to run `pnpm exec pr-shepherd stack <pr> --until-terminal --merge`. Stop this layer's poll, apply `needs-human` + one comment (below), and keep shepherding the other owned PRs. Do not sync, rebase, or push for it, and do not run the printed `stack` command until every single-PR poll has stopped — see "When to run `pnpm exec pr-shepherd stack`" below. |
+| 12                      | `TRIAGE`              | Any other `TRIAGE`: fix on the layer that owns it, `gh stack sync`, `gh stack rebase --upstack`, `gh stack push` **once**, then re-poll that PR. Bounded implementation work here may be dispatched to a subagent; the poll loop itself stays with this session.                                                                                                                                                                                                                                                               |
+| 0                       | `CANCEL`              | Cancel shepherding of that PR only. The other PRs continue untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 10 / 11                 | `WAIT` / `MARK_READY` | Normal; continue that PR's poll.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 14                      | `CLOSED`              | Report; stop that PR. If it sits below an open layer, the stack is broken (A2).                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 15                      | `MERGE`               | This layer left the open stack — GitHub retargeted it directly onto `main` once every layer below it merged, so `mergeStatus.mergeRequirements.stack` is now absent and pr-shepherd fell through to its ordinary ready-PR path. Not drift: treat it like any other ready PR, report the printed merge command, and let the human decide.                                                                                                                                                                                       |
+| 64/65/66/69/70/75/77/78 | tool failure          | Stop that PR and report.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
-Exit codes 2 and 8 do not exist.
+Exit codes 2 and 8 do not exist. Exit 16 (`SHEPHERD`) comes only from `pnpm exec pr-shepherd stack`, never
+from a single-PR poll.
 
-**`--merge` never causes pr-shepherd to execute anything itself, stacked or not.** It only gates
-whether pr-shepherd is willing to _compute_ a suggested command — `buildMergeCommandPlan` in
-`merge.mjs` for a plain ready PR, or the `stacked-pr` trigger's embedded `gh stack merge --squash <pr>`
-text in `escalate.mjs` for a still-stacked one. Nothing in the installed package shells out to `gh`;
-every consumer of that result only renders it for a human to read and run. That is why the command
-above always carries `--merge`: it changes what gets reported, never what gets run. Without it,
-`buildReadyMergeOutcome` short-circuits before ever checking `mergeStatus.mergeRequirements.stack`, so
-a ready layer silently settles as plain `CANCEL` — confirmed live against two real stacked PRs before
-this flag was added, and the reason issue #11522 exists.
+**`--merge` never makes pr-shepherd merge anything by itself, stacked or not.** It only gates whether
+pr-shepherd is willing to _compute_ a suggested command — `buildMergeCommandPlan` in `merge.mjs` for a
+plain ready PR, or, for a still-stacked layer, the pointer to `pnpm exec pr-shepherd stack <pr> --merge`, whose
+own `MERGE` output carries the stack merge command. Every such command is printed for the caller; the
+merge happens only if someone runs it. Running a printed `gh pr merge`, `gh stack merge`, or
+`pnpm exec pr-shepherd apply merge ...` command **is** a merge and needs the same per-layer human
+approval. That is why the command above always carries `--merge`: it changes what gets reported, never
+what gets run. Without it, `buildReadyMergeOutcome` short-circuits before ever checking
+`mergeStatus.mergeRequirements.stack`, so a ready layer silently settles as plain `CANCEL` — confirmed
+live against two real stacked PRs before this flag was added, and the reason issue #11522 exists.
 
-**Mutating git does not parallelize even though polling does.** The `FIX_CODE` row runs
+**Mutating git does not parallelize even though polling does.** The `TRIAGE` row runs
 `gh stack sync` / `gh stack rebase --upstack` / `gh stack push` inside the one shared worktree for
 this stack. At most one owned layer may be in that sync/rebase/push phase at a time; suspend the other
 layers' polls across it, because their branches can be rewritten underneath them, and resume after the
 push lands.
 
 **Escalations persist to the PR, not the transcript.** Apply the `needs-human` label and post **one**
-comment per escalation event (not per poll), carrying `.escalate.triggers` and the layer's position.
-Minimize a superseded escalation comment via the GraphQL `minimizeComment` mutation
+comment per escalation event (not per poll), carrying the layer's position and either
+`.escalate.triggers` (for `ESCALATE`) or "ready and waiting on your merge decision" (for the stacked
+`TRIAGE` row). Minimize a superseded escalation comment via the GraphQL `minimizeComment` mutation
 (`classifier: OUTDATED`) when a layer re-escalates — not pr-shepherd's `--minimize-comment-ids`, which
 targets bot review comments, not comments this agent authored. Clear the label once the layer stops
-needing a human. `escalate.triggers` deep-equal `["stacked-pr"]` means "ready and waiting on your
-merge decision"; anything else means "genuinely blocked on X" — both still go to the human, this only
-changes what the comment says. Relay `stacked-pr`'s embedded merge command in the comment for
-visibility, but do not present it as safe to run without the bottom-most-layer check called out in the
-table above — GitHub's own readiness check for an upper layer does not require the layers below it to
-have merged first.
+needing a human. Both kinds still go to the human; the kind only changes what the comment says. Never
+present a stack merge command as safe to run without the checks in
+[Merge the bottom layer as soon as it is ready](#merge-the-bottom-layer-as-soon-as-it-is-ready) —
+GitHub's own readiness check for an upper layer does not require the layers below it to have merged
+first.
 
 ### C. Report, then let the human decide each merge
 
@@ -222,7 +226,7 @@ layer**:
    "everything up to and including it" is exactly one PR.
 5. Do **not** run `gh stack sync` here — return to A2 and re-read topology remotely instead.
    Unconditional local rebasing right after a merge is the blast radius #11426 already demonstrated;
-   sync belongs to the `FIX_CODE` row in the table above. If no unmerged owned layers remain, the
+   sync belongs to the `TRIAGE` row in the table above. If no unmerged owned layers remain, the
    drain is complete.
 
 **Residual TOCTOU, stated honestly:** the window between `S1` and the merge cannot be closed —
@@ -233,31 +237,34 @@ queue, a successful `gh stack merge` does not mean merged yet — the layer stay
 processes it; the re-read at step 2 of the next drain iteration handles that normally.
 
 **When you stop or are blocked, report the stack and ask.** Before yielding on an unresolved
-escalation, a human interrupt or session pause, repeated `FIX_CODE` with no progress, or an
+escalation, a human interrupt or session pause, repeated `TRIAGE` with no progress, or an
 out-of-scope external blocker: run `gh stack view --json`, report each layer's number and state, and
 if the bottom owned layer is ready, ask whether to merge it before continuing.
 
-### Why not just poll `--stack`
+### When to run `pnpm exec pr-shepherd stack`
 
-`pr-shepherd --stack <anchor>` already batches its GraphQL reads for the whole stack in one query
-(paginated only past 50 layers) — it is not a per-PR call, and it is the right tool for one job: a
-cheap, remote-derived **drain-complete proof** once the owned set has settled and no single-PR poll is
-running:
+`pnpm exec pr-shepherd stack <any-layer>` reads the whole stack in one batched query (paginated only
+past 50 layers). Run it only once the owned set has settled and no single-PR poll is running, for two
+jobs:
 
 ```bash
-pnpm exec pr-shepherd --stack <any-layer> --merge --format json
+pnpm exec pr-shepherd stack <any-layer> --merge --once --format json
 ```
 
-With `--merge`, every open stacked row stays `fix_code`, so `reason: "all_terminal"` means every layer
-is merged or closed. This only proves completion for the **owned subset** derived from the A2 topology
-read — under mixed ownership the unowned layers stay open forever and `all_terminal` never fires, so
-completion there is "every owned layer is merged or closed," checked directly, not via this call.
+- **Merge proposal.** With `--merge`, a ready stacked row routes to `merge`, so `MERGE` (exit 15)
+  names the highest layer whose open lower layers are all ready and prints one merge command for that
+  whole span. Report it to the human; never run it on your own. A `gh stack merge N` command merges N
+  and every open layer below it, so it needs approval for **each** layer in that span, and the checks
+  in [Merge the bottom layer as soon as it is ready](#merge-the-bottom-layer-as-soon-as-it-is-ready)
+  still apply before anyone runs a merge.
+- **Drain-complete proof.** `CANCEL` (exit 0, `reason: "all_terminal"`) means every layer is merged
+  or closed. This only proves completion for the **owned subset** derived from the A2 topology read —
+  under mixed ownership the unowned layers stay open forever and `all_terminal` never fires, so
+  completion there is "every owned layer is merged or closed," checked directly, not via this call.
 
-Do not use it for anything else: it is a routing hint, not an authoritative per-PR decision, it
-returns as soon as any row is actionable, and — the reason concurrent single-PR polls exist instead of
-this — it shares one timer per row, so calling it while single-PR polls are live wipes their
-accumulated readiness. `--stack` without `--merge` is useless for a drain-complete proof: ready rows
-become `cancel` and `all_terminal` fires on an undrained stack.
+`SHEPHERD` (exit 16) lists layers that still need one-PR sessions: resume those single-PR polls from
+step B and do not run `stack` again until they settle. `stack` without `--merge` is useless for a
+drain-complete proof: ready rows become `cancel` and `all_terminal` fires on an undrained stack.
 
 ## Keep track — derive the ledger, never remember it
 

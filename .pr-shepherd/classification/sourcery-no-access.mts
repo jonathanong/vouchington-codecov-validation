@@ -3,7 +3,7 @@ import type { ClassifyRule } from 'pr-shepherd/classify'
 /**
  * Sourcery has no access to this repository while it is private, so it answers every review
  * request with the same upsell instead of a review. Left unsuppressed, that one message makes
- * Shepherd return `FIX_CODE` on every poll of every PR, forever.
+ * Shepherd return `TRIAGE` on every poll of every PR, forever.
  *
  * Matched on the upsell body rather than on the author alone: once this repository is public,
  * Sourcery gains access and its reviews become real feedback that must not be discarded silently.
