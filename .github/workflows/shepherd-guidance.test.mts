@@ -87,7 +87,7 @@ describe('shepherd guidance', () => {
     )
     expect(gitAndPrsText).toContain('printed `## Instructions` section exactly')
     expect(gitAndPrsText).toContain(
-      '`FIX_CODE` means act on the instructions, then rerun the positional-default command `pnpm exec pr-shepherd <pr> --interval 60s --until-terminal --quiet-status`',
+      '`TRIAGE` means act on the instructions, then rerun the positional-default command `pnpm exec pr-shepherd <pr> --interval 60s --until-terminal --quiet-status`',
     )
     expect(
       listStillContainsEvery(

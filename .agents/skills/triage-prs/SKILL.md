@@ -185,7 +185,7 @@ Classify the outcome:
 - **Repository auto-merge disabled:** dispatch the shepherd, report manual merge required, and leave
   auto-merge unchanged.
 - **Native GitHub stack:** shepherd owned layers concurrently via **single-PR** polls — safe, because
-  pr-shepherd's per-PR ready-delay state is isolated per PR. Never run the aggregate `--stack` poll
+  pr-shepherd's per-PR ready-delay state is isolated per PR. Never run the aggregate `stack` poll
   while any single-PR poll is in flight; it shares one timer across every row and resets them all.
   Merge serially bottom-up, each layer on its own explicit human approval, per
   [Merge the bottom layer as soon as it is ready](../stacked-prs/SKILL.md#merge-the-bottom-layer-as-soon-as-it-is-ready) —

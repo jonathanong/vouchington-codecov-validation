@@ -81,7 +81,7 @@ For AI review:
 When a bot produces non-actionable noise, add a permanent exception rather than triaging it by hand on every PR:
 
 - **Non-actionable comments or reviews** → add a `ClassifyRule` file under `.pr-shepherd/classification/*.mts` matching the bot's raw and `[bot]`-suffixed `author` logins (and optionally `kind`/`body`), returning `{ suppress: true, autoResolve: true }`. See [`docs/configuration.md` in pr-shepherd](https://github.com/jonathanong/pr-shepherd/blob/main/docs/configuration.md) and the bundled examples under `examples/classification/`.
-- **Noisy CI checks** → add a case-insensitive glob to `ignoreChecks` in `.pr-shepherdrc.yml` at the repo root.
+- **Noisy CI checks** → add a case-insensitive glob to `checks.ignore` in `.pr-shepherdrc.yml` at the repo root.
 
 Current exceptions:
 

@@ -8,14 +8,16 @@ import { describe, expect, it } from 'vitest'
 // workspace-pinning and local-guidance contracts here — package command behavior belongs upstream
 // as a rule.
 //
-// The stack-escalation assertions below are the deliberate, narrow exception: they pin *Vouchington's
+// The stack-routing assertions below are the deliberate, narrow exception: they pin *Vouchington's
 // procedure assumptions about upstream behavior* (the stacked-prs skill and git-and-prs.md both
-// state, as fact, that every ready stacked layer terminates as `ESCALATE`/`stacked-pr` rather than
-// `MERGE`, and give an exact exit-code map; and that per-PR ready-delay state is isolated, so
-// concurrent single-PR shepherds on different stack layers never reset each other's timer). The
-// 0.47→0.50 rot that motivated this whole plan was exactly this kind of undetected drift at a caret
-// bump, so those claims need a version-drift guard too — not to test pr-shepherd's own correctness,
-// but to catch the moment its behavior no longer matches what our docs promise. A failure here means:
+// state, as fact, that a ready stacked layer's single-PR `--merge` poll returns `TRIAGE` routing to
+// `pr-shepherd stack <pr> --until-terminal --merge` rather than `MERGE`, that the anchored `stack`
+// command routes ready stacked rows to `merge`, and give an exact exit-code map; and that per-PR
+// ready-delay state is isolated, so concurrent single-PR shepherds on different stack layers never
+// reset each other's timer). The 0.47→0.50 rot that motivated this whole plan was exactly this kind
+// of undetected drift at a caret bump, so those claims need a version-drift guard too — not to test
+// pr-shepherd's own correctness, but to catch the moment its behavior no longer matches what our
+// docs promise. A failure here means:
 // re-verify the stack procedure in .agents/skills/stacked-prs/SKILL.md and
 // .agents/skills/agent-workflow/git-and-prs.md against the new installed behavior and update both the
 // docs and this test — it is not a broken import to silently fix.
@@ -47,9 +49,9 @@ const LOCAL_GUIDANCE = CHECKED_IN_GUIDANCE.filter(
 )
 
 const DEPRECATED_INVOCATIONS =
-  /\b(?:pnpm exec )?pr-shepherd\s+(?:poll|resolve|journal(?!\s+extract(?:\s|$))|commit-suggestion|mark-files-as-viewed|log-file|clean)\b/u
+  /\b(?:pnpm exec )?pr-shepherd\s+(?:--stack|poll|resolve|journal(?!\s+extract(?:\s|$))|commit-suggestion|build-suggestion-patch(?:es)?|mark-files-as-viewed|log-file|clean)\b/u
 const BARE_LOCAL_COMMAND =
-  /`pr-shepherd\s+(?:iterate|apply|journal|build-suggestion-patch(?:es)?|admin|<(?:pr|N|pr-number)>|\d+)(?:\s+[^`\n]+)?`|```(?:bash|sh|zsh|shell)?\n(?:(?!```)[^\n]*\n)*? {0,3}pr-shepherd\s+(?:iterate|apply|journal|build-suggestion-patch(?:es)?|admin|<(?:pr|N|pr-number)>|\d+)(?:\s+[^\n]+)?(?=\n|$)/u
+  /`pr-shepherd\s+(?:iterate|stack|apply|journal|suggest|admin|<(?:pr|N|pr-number)>|\d+)(?:\s+[^`\n]+)?`|```(?:bash|sh|zsh|shell)?\n(?:(?!```)[^\n]*\n)*? {0,3}pr-shepherd\s+(?:iterate|stack|apply|journal|suggest|admin|<(?:pr|N|pr-number)>|\d+)(?:\s+[^\n]+)?(?=\n|$)/u
 
 function runCli(args: string[]): string {
   return execFileSync('pnpm', ['exec', 'pr-shepherd', ...args], {
@@ -129,16 +131,16 @@ async function importPureModule<T>(relativePath: string, forWhat: string): Promi
   }
 }
 
-describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
-  it('routes a ready stacked layer to escalate/stacked-pr, and a non-stacked one to merge', async () => {
+describe('pr-shepherd stack-routing contract (version-drift guard)', () => {
+  it('routes a ready stacked single-PR `--merge` poll to triage via `stack`, and a non-stacked one to merge', async () => {
     const { buildReadyMergeOutcome } = await importPureModule<{
       buildReadyMergeOutcome: (
         enabled: boolean,
         readyElapsed: boolean,
         base: Record<string, unknown>,
         report: Record<string, unknown>,
-      ) => { action: string; escalate?: { triggers: string[] } }
-    }>('bin/commands/iterate/merge-state.mjs', 'the stacked-escalate route')
+      ) => { action: string; escalate?: unknown; triage?: { instructions: string[] } }
+    }>('bin/commands/iterate/merge-state.mjs', 'the stacked-layer stack route')
 
     const baseReport = {
       headSha: 'a'.repeat(40),
@@ -161,8 +163,11 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
         },
       },
     )
-    expect(stackedOutcome.action).toBe('escalate')
-    expect(stackedOutcome.escalate?.triggers).toEqual(['stacked-pr'])
+    expect(stackedOutcome.action).toBe('triage')
+    expect(stackedOutcome.escalate).toBeUndefined()
+    const instructions = stackedOutcome.triage?.instructions.join('\n') ?? ''
+    expect(instructions).toContain('do not run `gh pr merge` for this layer')
+    expect(instructions).toMatch(/pr-shepherd stack \S+ --until-terminal --merge/u)
 
     const unstackedOutcome = buildReadyMergeOutcome(
       true,
@@ -176,7 +181,7 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
     expect(unstackedOutcome.action).toBe('merge')
   })
 
-  it('routes an aggregate `--merge --stack` poll on a stacked row to fix_code, not appears-ready', async () => {
+  it('routes a stacked row to triage outside the anchored `stack` command, and to merge inside it', async () => {
     const { routePollSummary } = await importPureModule<{
       routePollSummary: (
         raw: Record<string, unknown>,
@@ -184,7 +189,7 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
         review: Record<string, unknown>,
         opts: Record<string, unknown>,
       ) => { action: string; reasons: string[] }
-    }>('bin/github/poll-summary-route.mjs', 'the aggregate ready-delay hazard')
+    }>('bin/github/poll-summary-route.mjs', 'the aggregate stacked-row route')
 
     const raw = {
       isDraft: false,
@@ -197,16 +202,19 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
     const checks = { failing: 0, inProgress: 0 }
     const review = { actionable: 0 }
 
-    const result = routePollSummary(raw, checks, review, { merge: true })
-    expect(result).toEqual({ action: 'fix_code', reasons: ['authoritative-poll-required'] })
-
-    // If this now reports `appears-ready`, poll-summary-route.mjs stopped intercepting the
-    // aggregate stacked case — git-and-prs.md's "never run --stack while single-PR polls are in
-    // flight" rule and stacked-prs.md's "why not just poll --stack" section can then be deleted.
-    const nonStackedResult = routePollSummary({ ...raw, stack: undefined }, checks, review, {
-      merge: true,
+    expect(routePollSummary(raw, checks, review, { merge: true })).toEqual({
+      action: 'triage',
+      reasons: ['authoritative-poll-required'],
     })
-    expect(nonStackedResult).toEqual({ action: 'merge', reasons: ['appears-ready'] })
+    // Inside `pr-shepherd stack <pr> --merge`, a ready stacked row emits a merge command. The
+    // stacked-prs skill requires reporting that command to a human rather than running it.
+    expect(routePollSummary(raw, checks, review, { merge: true, stackPrNumber: 1 })).toEqual({
+      action: 'merge',
+      reasons: ['appears-ready'],
+    })
+    expect(routePollSummary({ ...raw, stack: undefined }, checks, review, { merge: true })).toEqual(
+      { action: 'merge', reasons: ['appears-ready'] },
+    )
   })
 
   it('maps every terminal action to the exit code the procedure docs assume', async () => {
@@ -217,15 +225,16 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
 
     expect(EXIT.WAIT).toBe(10)
     expect(EXIT.MARK_READY).toBe(11)
-    expect(EXIT.FIX_CODE).toBe(12)
+    expect(EXIT.TRIAGE).toBe(12)
     expect(EXIT.ESCALATE).toBe(13)
     expect(EXIT.CLOSED).toBe(14)
     expect(EXIT.MERGE).toBe(15)
+    expect(EXIT.SHEPHERD).toBe(16)
     expect(EXIT.OK).toBe(0)
 
     expect(iterateResultToExitCode({ action: 'escalate' })).toBe(13)
     expect(iterateResultToExitCode({ action: 'merge' })).toBe(15)
-    expect(iterateResultToExitCode({ action: 'fix_code' })).toBe(12)
+    expect(iterateResultToExitCode({ action: 'triage' })).toBe(12)
     expect(iterateResultToExitCode({ action: 'wait' })).toBe(10)
     expect(iterateResultToExitCode({ action: 'mark_ready' })).toBe(11)
     // CANCEL is not a single exit code — only its `closed` reason maps to 14; `merged` and
@@ -239,7 +248,7 @@ describe('pr-shepherd stack-escalation contract (version-drift guard)', () => {
   it('keys ready-delay state per PR number, so concurrent single-PR shepherds do not reset each other', async () => {
     // stacked-prs.md and git-and-prs.md both claim, as fact, that shepherding every owned layer of
     // a stack with concurrent single-PR polls is safe because ready-delay state is isolated per PR
-    // — never the aggregate `--stack` poll, which does collide (asserted above). That claim rests on
+    // — the aggregate `pr-shepherd stack` poll is a separate code path. That claim rests on
     // resolvePrStatePath keying the ready-since marker by PR number; if that key ever drops the PR
     // number, two concurrent layers would share one ready-delay timer and the concurrency claim in
     // both docs becomes false silently. A failure here means: re-verify "concurrent single-PR

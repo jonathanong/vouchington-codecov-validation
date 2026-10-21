@@ -1,15 +1,9 @@
-# ignoreChecks entries must be the RAW name — either a Checks API check_run `name`
+version: 1
+# checks.ignore entries must be the RAW name — either a Checks API check_run `name`
 # (e.g. 'Kilo Code Review') or a Statuses API commit status `context` (e.g. 'CodeRabbit')
 # — not the composite display name shown in the PR UI.
 # pr-shepherd matches against the raw name; composite-name entries silently never match.
-ignoreChecks:
-  - 'Kilo Code Review'
-  - 'CodeRabbit'
-
-# The repo disallows merge commits and rebase merges (squash-only, see
-# allow_squash_merge/allow_merge_commit/allow_rebase_merge); without this,
-# Shepherd's `--merge` default fails with "Merge commits are not allowed on
-# this repository."
-merge:
-  commandArgs:
-    - '--squash'
+checks:
+  ignore:
+    - 'Kilo Code Review'
+    - 'CodeRabbit'
